@@ -53,8 +53,9 @@
       padding: 14px;
       margin-bottom: 14px;
     }
-    #reader { width: 100%; border-radius: 8px; overflow: hidden; background: #000; min-height: 0; }
-    #reader:empty { display: none; }
+    /* Altura fija para que la página no salte al abrir la cámara */
+    #reader { width: 100%; height: 260px; border-radius: 8px; overflow: hidden; background: #000; }
+    #reader video { width: 100%; height: 100%; object-fit: cover; }
     label { display: block; font-weight: 600; margin: 12px 0 6px; }
     input, select, textarea {
       width: 100%;
@@ -85,6 +86,18 @@
     #status { margin-top: 12px; font-weight: 600; min-height: 1.2em; }
     #status.ok { color: var(--ok); }
     #status.error { color: var(--error); }
+    #log {
+      margin-top: 10px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 0.8rem;
+      color: var(--muted);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 180px;
+      overflow-y: auto;
+      border-top: 1px dashed var(--border);
+      padding-top: 8px;
+    }
   </style>
 </head>
 <body>
@@ -96,6 +109,7 @@
     <button id="btnParar" type="button" class="secondary" hidden>Detener cámara</button>
     <div id="reader"></div>
     <p class="hint">Apunta la cámara al código EAN-13 o Code 128. También puedes escribirlo abajo.</p>
+    <div id="log" aria-live="polite"></div>
   </section>
 
   <form id="form" class="card" autocomplete="off">
@@ -139,7 +153,20 @@
   const $ = (id) => document.getElementById(id);
   const form = $("form");
   const statusEl = $("status");
+  const logEl = $("log");
   let scanner = null;
+  let arrancando = false;
+
+  // Registro visible en pantalla, para diagnosticar en el teléfono
+  function registrar(texto) {
+    const hora = new Date().toLocaleTimeString("es-EC");
+    logEl.textContent += hora + "  " + texto + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  registrar("Página cargada. Navegador: " + navigator.userAgent.slice(0, 120));
+  registrar("Contexto seguro (https): " + window.isSecureContext);
+  registrar("Lector cargado: " + (typeof Html5Qrcode !== "undefined" ? "sí" : "NO"));
 
   // Recordar el usuario en este navegador (solo por comodidad)
   try {
@@ -163,11 +190,38 @@
 
   // ----- Cámara -----
   async function iniciarCamara() {
+    if (arrancando || scanner) return;
+    arrancando = true;
+    $("btnCamara").disabled = true;
+    registrar("Pulsado: Activar cámara");
+
     if (typeof Html5Qrcode === "undefined") {
+      registrar("ERROR: la librería no cargó (revisa conexión)");
       mostrarEstado("No se pudo cargar el lector. Revisa tu conexión.", "error");
+      arrancando = false;
+      $("btnCamara").disabled = false;
       return;
     }
+
     try {
+      // Paso 1: listar cámaras disponibles
+      let camaras = [];
+      try {
+        camaras = await Html5Qrcode.getCameras();
+        registrar("Cámaras encontradas: " + camaras.length);
+      } catch (e) {
+        registrar("getCameras falló: " + (e && (e.name || e.message || e)));
+      }
+
+      // Paso 2: elegir la cámara trasera si existe
+      let origen = { facingMode: "environment" };
+      if (camaras.length) {
+        const trasera = camaras.find((c) => /back|rear|environment|trasera|posterior/i.test(c.label));
+        origen = trasera ? trasera.id : camaras[camaras.length - 1].id;
+        registrar("Usando cámara: " + (trasera ? trasera.label : camaras[camaras.length - 1].label));
+      }
+
+      // Paso 3: iniciar el lector
       scanner = new Html5Qrcode("reader", {
         formatsToSupport: [
           Html5QrcodeSupportedFormats.EAN_13,
@@ -175,24 +229,34 @@
         ],
         verbose: false
       });
+      registrar("Iniciando lector...");
       await scanner.start(
-        { facingMode: "environment" },
+        origen,
         { fps: 10, qrbox: { width: 260, height: 140 } },
         onLectura,
         () => { /* sin lectura en este cuadro: normal */ }
       );
+      registrar("Cámara activa");
       $("btnCamara").hidden = true;
       $("btnParar").hidden = false;
       mostrarEstado("Cámara activa. Apunta al código.", "");
     } catch (err) {
+      const nombre = err && err.name ? err.name : "";
+      const texto = err && err.message ? err.message : String(err);
+      registrar("ERROR al iniciar: " + nombre + " - " + texto);
+      mostrarEstado("No se pudo abrir la cámara (" + (nombre || "error") + "). Revisa el registro de abajo.", "error");
+      try { if (scanner) scanner.clear(); } catch (e) { /* nada que limpiar */ }
       scanner = null;
-      mostrarEstado("No se pudo abrir la cámara. Revisa los permisos del navegador (y que la página use https).", "error");
+    } finally {
+      arrancando = false;
+      $("btnCamara").disabled = false;
     }
   }
 
   async function detenerCamara() {
+    registrar("Pulsado: Detener cámara");
     if (scanner) {
-      try { await scanner.stop(); } catch (e) { /* ya detenida */ }
+      try { await scanner.stop(); } catch (e) { registrar("stop: " + e); }
       try { scanner.clear(); } catch (e) { /* nada que limpiar */ }
       scanner = null;
     }
@@ -201,6 +265,7 @@
   }
 
   function onLectura(texto, resultado) {
+    registrar("Lectura: " + texto);
     $("codigo").value = texto;
     const nombre = resultado && resultado.result && resultado.result.format
       ? resultado.result.format.formatName : "";
@@ -231,6 +296,7 @@
       return j;
     } catch (e) {
       // Si el navegador bloquea la respuesta, el envío puede haber llegado igual
+      registrar("Respuesta bloqueada, reintento sin confirmación");
       await fetch(URL_SCRIPT, {
         method: "POST",
         mode: "no-cors",
@@ -265,21 +331,25 @@
     const btn = $("btnGuardar");
     btn.disabled = true;
     mostrarEstado("Guardando...", "");
+    registrar("Enviando código " + codigo);
     try {
       const res = await enviar(datos);
       if (res && res.ok) {
         mostrarEstado(res.sinConfirmacion
           ? "Enviado. Revisa la hoja para confirmar."
           : "Guardado ✓", res.sinConfirmacion ? "" : "ok");
+        registrar("Guardado en la hoja");
         $("codigo").value = "";
         $("formato").value = "";
         $("notas").value = "";
         $("cantidad").value = "1";
       } else {
         mostrarEstado("Error: " + ((res && res.error) || "respuesta desconocida"), "error");
+        registrar("Error del servidor: " + ((res && res.error) || "desconocido"));
       }
     } catch (e) {
       mostrarEstado("No se pudo enviar. Revisa tu conexión e inténtalo de nuevo.", "error");
+      registrar("ERROR al enviar: " + e);
     } finally {
       btn.disabled = false;
     }
