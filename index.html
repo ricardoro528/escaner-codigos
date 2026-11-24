@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Escáner de códigos</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1d2430;
+      --muted: #5b6573;
+      --primary: #1f6feb;
+      --primary-text: #ffffff;
+      --ok: #1a7f37;
+      --error: #c62828;
+      --border: #d0d7de;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0d1117;
+        --card: #161b22;
+        --text: #e6edf3;
+        --muted: #9aa4b2;
+        --primary: #2f81f7;
+        --border: #30363d;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #0d1117;
+      --card: #161b22;
+      --text: #e6edf3;
+      --muted: #9aa4b2;
+      --primary: #2f81f7;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-size: 16px;
+      padding: 16px;
+      -webkit-text-size-adjust: 100%;
+    }
+    main { max-width: 520px; margin: 0 auto; }
+    h1 { font-size: 1.3rem; margin: 0 0 12px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+    #reader { width: 100%; border-radius: 8px; overflow: hidden; background: #000; min-height: 0; }
+    #reader:empty { display: none; }
+    label { display: block; font-weight: 600; margin: 12px 0 6px; }
+    input, select, textarea {
+      width: 100%;
+      font: inherit;
+      color: var(--text);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    textarea { min-height: 70px; resize: vertical; }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+    button {
+      font: inherit;
+      font-weight: 600;
+      border: 0;
+      border-radius: 10px;
+      padding: 14px;
+      width: 100%;
+      background: var(--primary);
+      color: var(--primary-text);
+      margin-top: 10px;
+    }
+    button.secondary { background: transparent; color: var(--primary); border: 1px solid var(--primary); }
+    button:disabled { opacity: 0.5; }
+    .hint { color: var(--muted); font-size: 0.9rem; margin: 6px 0 0; }
+    #status { margin-top: 12px; font-weight: 600; min-height: 1.2em; }
+    #status.ok { color: var(--ok); }
+    #status.error { color: var(--error); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Escáner de códigos</h1>
+
+  <section class="card">
+    <button id="btnCamara" type="button">Activar cámara</button>
+    <button id="btnParar" type="button" class="secondary" hidden>Detener cámara</button>
+    <div id="reader"></div>
+    <p class="hint">Apunta la cámara al código EAN-13 o Code 128. También puedes escribirlo abajo.</p>
+  </section>
+
+  <form id="form" class="card" autocomplete="off">
+    <label for="codigo">Código</label>
+    <input id="codigo" name="codigo" inputmode="numeric" placeholder="Escanea o escribe el código" required>
+    <input type="hidden" id="formato" name="formato" value="">
+
+    <div class="row">
+      <div>
+        <label for="tipo">Tipo</label>
+        <select id="tipo" name="tipo">
+          <option value="Bodega">Bodega</option>
+          <option value="Medidor">Medidor</option>
+        </select>
+      </div>
+      <div>
+        <label for="cantidad" id="labelCantidad">Cantidad</label>
+        <input id="cantidad" name="cantidad" type="number" inputmode="decimal" step="any" min="0" value="1" required>
+      </div>
+    </div>
+
+    <label for="usuario">Usuario</label>
+    <input id="usuario" name="usuario" type="text" placeholder="Tu nombre">
+
+    <label for="notas">Notas</label>
+    <textarea id="notas" name="notas" placeholder="Opcional"></textarea>
+
+    <button id="btnGuardar" type="submit">Guardar</button>
+    <div id="status" role="status"></div>
+  </form>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script>
+  // ====== CONFIGURACIÓN ======
+  const URL_SCRIPT = "https://script.google.com/macros/s/AKfycbz6raZr5a5-hpTj7rpaf5ETHnsbhFKXDs3bJ6TiGbItA26-cM8io_jIV_huVKWk8hcNhg/exec";
+  const TOKEN = "Zq7vKa29Lp4Xw8Rn3Ts6Yb1Hc5Md0Ge";
+  const HOJA = "Escaneos";
+  // ===========================
+
+  const $ = (id) => document.getElementById(id);
+  const form = $("form");
+  const statusEl = $("status");
+  let scanner = null;
+
+  // Recordar el usuario en este navegador (solo por comodidad)
+  try {
+    const guardado = localStorage.getItem("usuarioEscaner");
+    if (guardado) $("usuario").value = guardado;
+  } catch (e) { /* almacenamiento bloqueado: se ignora */ }
+
+  function mostrarEstado(texto, clase) {
+    statusEl.textContent = texto;
+    statusEl.className = clase || "";
+  }
+
+  // Cambia la etiqueta según el tipo
+  function actualizarEtiqueta() {
+    const esMedidor = $("tipo").value === "Medidor";
+    $("labelCantidad").textContent = esMedidor ? "Lectura" : "Cantidad";
+    $("cantidad").step = esMedidor ? "any" : "1";
+  }
+  $("tipo").addEventListener("change", actualizarEtiqueta);
+  actualizarEtiqueta();
+
+  // ----- Cámara -----
+  async function iniciarCamara() {
+    if (typeof Html5Qrcode === "undefined") {
+      mostrarEstado("No se pudo cargar el lector. Revisa tu conexión.", "error");
+      return;
+    }
+    try {
+      scanner = new Html5Qrcode("reader", {
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.CODE_128
+        ],
+        verbose: false
+      });
+      await scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 260, height: 140 } },
+        onLectura,
+        () => { /* sin lectura en este cuadro: normal */ }
+      );
+      $("btnCamara").hidden = true;
+      $("btnParar").hidden = false;
+      mostrarEstado("Cámara activa. Apunta al código.", "");
+    } catch (err) {
+      scanner = null;
+      mostrarEstado("No se pudo abrir la cámara. Revisa los permisos del navegador (y que la página use https).", "error");
+    }
+  }
+
+  async function detenerCamara() {
+    if (scanner) {
+      try { await scanner.stop(); } catch (e) { /* ya detenida */ }
+      try { scanner.clear(); } catch (e) { /* nada que limpiar */ }
+      scanner = null;
+    }
+    $("btnCamara").hidden = false;
+    $("btnParar").hidden = true;
+  }
+
+  function onLectura(texto, resultado) {
+    $("codigo").value = texto;
+    const nombre = resultado && resultado.result && resultado.result.format
+      ? resultado.result.format.formatName : "";
+    $("formato").value = nombre === "EAN_13" ? "EAN-13" : nombre === "CODE_128" ? "Code 128" : nombre;
+    mostrarEstado("Código leído: " + texto, "ok");
+    detenerCamara();
+    if (navigator.vibrate) navigator.vibrate(120);
+  }
+
+  $("btnCamara").addEventListener("click", iniciarCamara);
+  $("btnParar").addEventListener("click", detenerCamara);
+
+  // Si escriben el código a mano, se marca formato vacío
+  $("codigo").addEventListener("input", () => { $("formato").value = ""; });
+
+  // ----- Envío -----
+  async function enviar(datos) {
+    const cuerpo = JSON.stringify(datos);
+    try {
+      // text/plain evita el preflight de CORS
+      const r = await fetch(URL_SCRIPT, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: cuerpo,
+        redirect: "follow"
+      });
+      const j = await r.json();
+      return j;
+    } catch (e) {
+      // Si el navegador bloquea la respuesta, el envío puede haber llegado igual
+      await fetch(URL_SCRIPT, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: cuerpo
+      });
+      return { ok: true, sinConfirmacion: true };
+    }
+  }
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const codigo = $("codigo").value.trim();
+    if (!codigo) {
+      mostrarEstado("Escribe o escanea un código.", "error");
+      return;
+    }
+    const usuario = $("usuario").value.trim();
+    try { localStorage.setItem("usuarioEscaner", usuario); } catch (e) { /* ignorar */ }
+
+    const datos = {
+      token: TOKEN,
+      hoja: HOJA,
+      tipo: $("tipo").value,
+      codigo: codigo,
+      formato: $("formato").value || "",
+      cantidad: $("cantidad").value || "1",
+      usuario: usuario,
+      notas: $("notas").value.trim()
+    };
+
+    const btn = $("btnGuardar");
+    btn.disabled = true;
+    mostrarEstado("Guardando...", "");
+    try {
+      const res = await enviar(datos);
+      if (res && res.ok) {
+        mostrarEstado(res.sinConfirmacion
+          ? "Enviado. Revisa la hoja para confirmar."
+          : "Guardado ✓", res.sinConfirmacion ? "" : "ok");
+        $("codigo").value = "";
+        $("formato").value = "";
+        $("notas").value = "";
+        $("cantidad").value = "1";
+      } else {
+        mostrarEstado("Error: " + ((res && res.error) || "respuesta desconocida"), "error");
+      }
+    } catch (e) {
+      mostrarEstado("No se pudo enviar. Revisa tu conexión e inténtalo de nuevo.", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
