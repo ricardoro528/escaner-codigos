@@ -204,24 +204,9 @@
     }
 
     try {
-      // Paso 1: listar cámaras disponibles
-      let camaras = [];
-      try {
-        camaras = await Html5Qrcode.getCameras();
-        registrar("Cámaras encontradas: " + camaras.length);
-      } catch (e) {
-        registrar("getCameras falló: " + (e && (e.name || e.message || e)));
-      }
+      // Cámara trasera directamente (sin listar cámaras antes)
+      const origen = { facingMode: "environment" };
 
-      // Paso 2: elegir la cámara trasera si existe
-      let origen = { facingMode: "environment" };
-      if (camaras.length) {
-        const trasera = camaras.find((c) => /back|rear|environment|trasera|posterior/i.test(c.label));
-        origen = trasera ? trasera.id : camaras[camaras.length - 1].id;
-        registrar("Usando cámara: " + (trasera ? trasera.label : camaras[camaras.length - 1].label));
-      }
-
-      // Paso 3: iniciar el lector
       scanner = new Html5Qrcode("reader", {
         formatsToSupport: [
           Html5QrcodeSupportedFormats.EAN_13,
